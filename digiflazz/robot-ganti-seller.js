@@ -4,11 +4,13 @@
 (async () => {
   const LIVE = true;    // false = uji coba (hanya mencatat), true = ganti & simpan sungguhan
   const NILAI_MIN = 3.5;  // = filter "rating minimal" di modal Ubah Seller
-  // = filter "rating qty" di modal Ubah Seller, dicoba berurutan: 20+ dulu; bila tidak ada seller
-  // yang lolos untuk produk itu, standar diturunkan ke 10+.
+  // = filter "rating qty" di modal Ubah Seller, dicoba berurutan: seller 20+ dulu (termurah dulu); bila seller 20+
+  // habis (tidak ada, sudah dipakai baris lain, atau menolak) dilanjutkan ke seller 10+.
   const TINGKAT_ULASAN = [20, 10];
   const JEDA_MS = 700;
   const MAKS_DITOLAK = 3; // seller yang menolak (mis. wajib KTP) sebelum produk itu dilewati
+  // Seller sudah dipasang di kode lain untuk produk yang sama -> coba seller termurah berikutnya (tidak dihitung MAKS_DITOLAK).
+  const SUDAH_ADA = /sudah ada/i;
   // Seller yang menolak akun ini (wajib KTP), dilewati di semua produk. Hapus dari daftar bila KTP sudah diverifikasi Digiflazz.
   // Seller yang menolak dengan pesan cocok PENOLAKAN_AKUN ikut ditambahkan otomatis selama robot berjalan;
   // penolakan lain (mis. soal harga/produk) hanya berlaku untuk baris itu, produk lain tetap mencoba seller tsb.
@@ -82,15 +84,15 @@
     const dipakaiProduk = dipakai[p.product] ||= new Map();
     try {
       const { data } = await kirim(() => tabel.$http.get('/buyer/product/seller/' + p.id)); // = klik Ubah Seller
-      // Pakai tingkat ulasan tertinggi yang masih punya seller lolos.
-      let lolos = [];
-      for (const ulasanMin of TINGKAT_ULASAN) {
-        lolos = saringSeller(data.data, ulasanMin).filter(s => !sellerDilewati.has(s.seller));
-        if (lolos.length) { baris.standarUlasan = ulasanMin + '+'; break; }
-      }
-      const kandidat = lolos.filter(s => !dipakaiProduk.has(s.seller));
+      // Urutan terbaik: semua seller lolos standar ulasan tertinggi (termurah dulu), lalu tambahan dari standar berikutnya.
+      const urutan = [];
+      for (const ulasanMin of TINGKAT_ULASAN)
+        for (const s of saringSeller(data.data, ulasanMin))
+          if (!urutan.some(u => u.s === s)) urutan.push({ s, standar: ulasanMin + '+' });
+      const lolos = urutan.filter(u => !sellerDilewati.has(u.s.seller));
+      const kandidat = lolos.filter(u => !dipakaiProduk.has(u.s.seller));
       // Seller yang memenuhi syarat tapi dilewati karena menolak akun ini.
-      const terlewati = [...new Set(saringSeller(data.data, ulasanTerendah).filter(s => sellerDilewati.has(s.seller)).map(s => s.seller))];
+      const terlewati = [...new Set(urutan.filter(u => sellerDilewati.has(u.s.seller)).map(u => u.s.seller))];
       if (!lolos.length) baris.hasil = terlewati.length
         ? `Seller yang memenuhi syarat dilewati (menolak akun ini): ${terlewati.join(', ')}`
         : `Tidak ada seller Nilai >= ${NILAI_MIN} & ulasan ${ulasanTerendah}+`;
@@ -98,11 +100,15 @@
       const patokan = p.price; // harga seller sekarang, hanya untuk laporan hemat (minus = lebih mahal)
 
       // Biasanya hanya kandidat pertama; kandidat berikutnya dicoba hanya bila seller menolak saat disimpan.
-      for (const s of kandidat) {
-        const baru = { sellerBaru: s.seller, nilai: s.reviewAvg, ulasan: s.rating_qty, hargaBaru: s.price, hemat: patokan ? patokan - s.price : '' };
+      const sudahAda = new Set(); // seller yang dipakai kode lain produk ini (ketahuan saat simpan ditolak)
+      let ditolakLain = 0;
+      for (const { s, standar } of kandidat) {
+        if (sudahAda.has(s.seller)) continue; // SKU lain dari seller yang sama
+        const baru = { sellerBaru: s.seller, nilai: s.reviewAvg, ulasan: s.rating_qty, standarUlasan: standar, hargaBaru: s.price, hemat: patokan ? patokan - s.price : '' };
         // Semua baris diganti ke seller terbaik yang lolos saringan, walau lebih mahal dari seller sekarang.
         if (s.seller === p.seller) {
           baris.hasil = 'Sudah seller terbaik';
+          baris.standarUlasan = standar;
           if (!p.status) {
             if (LIVE) await simpan(p, () => { p.status = true; }); // = saklar Status ON + centang
             baris.hasil += LIVE ? ', status DINYALAKAN' : ', status AKAN DINYALAKAN';
@@ -123,13 +129,17 @@
           break;
         } catch (e) {
           if (statusGalat(e) !== 400) throw e;
-          if (PENOLAKAN_AKUN.test(pesanGalat(e))) sellerDilewati.add(s.seller);
-          (baris.ditolak ||= []).push(`${s.seller}: ${pesanGalat(e)}`);
-          if (baris.ditolak.length >= MAKS_DITOLAK) { baris.hasil = `GAGAL: ${MAKS_DITOLAK} seller menolak`; break; }
+          const pesan = pesanGalat(e);
+          (baris.ditolak ||= []).push(`${s.seller}: ${pesan}`);
           await sleep(JEDA_MS);
+          if (SUDAH_ADA.test(pesan)) { sudahAda.add(s.seller); continue; }
+          if (PENOLAKAN_AKUN.test(pesan)) sellerDilewati.add(s.seller);
+          if (++ditolakLain >= MAKS_DITOLAK) { baris.hasil = `GAGAL: ${MAKS_DITOLAK} seller menolak`; break; }
         }
       }
-      baris.hasil ||= 'GAGAL: semua seller menolak';
+      baris.hasil ||= !ditolakLain && sudahAda.size
+        ? `Tidak ada seller tersisa: ${[...sudahAda].join(', ')} sudah dipakai kode lain produk ini`
+        : 'GAGAL: semua seller menolak';
       if (p.max_price > 0 && baris.hargaBaru > p.max_price) baris.lewatHargaMax = p.max_price;
     } catch (e) {
       baris.hasil = `GAGAL (${statusGalat(e) ?? '-'}): ${pesanGalat(e)}`;
