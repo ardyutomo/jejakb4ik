@@ -5,8 +5,9 @@
   const LIVE = true;    // false = uji coba (hanya mencatat), true = ganti & simpan sungguhan
   const NILAI_MIN = 3.5;  // = filter "rating minimal" di modal Ubah Seller
   // = filter "rating qty" di modal Ubah Seller, dicoba berurutan: seller 20+ dulu (termurah dulu); bila seller 20+
-  // habis (tidak ada, sudah dipakai baris lain, atau menolak) dilanjutkan ke seller 10+.
-  const TINGKAT_ULASAN = [20, 10];
+  // habis (tidak ada, sudah dipakai baris lain, atau menolak) dilanjutkan ke seller 10+, lalu seller <10 ulasan (0+).
+  // Syarat Nilai >= NILAI_MIN tetap berlaku di semua tingkat.
+  const TINGKAT_ULASAN = [20, 10, 0];
   const JEDA_MS = 700;
   const MAKS_DITOLAK = 3; // seller yang menolak (mis. wajib KTP) sebelum produk itu dilewati
   // Seller sudah dipasang di kode lain untuk produk yang sama -> coba seller termurah berikutnya (tidak dihitung MAKS_DITOLAK).
@@ -52,6 +53,7 @@
   ];
   console.assert(saringSeller(contoh, 20).map(s => s.reviewAvg).join() === '4.9,3.6,5', 'saringSeller 20+ rusak');
   console.assert(saringSeller(contoh, 10).map(s => s.reviewAvg).join() === '4.8,4.9,3.6,5', 'saringSeller 10+ rusak');
+  console.assert(saringSeller(contoh, 0).map(s => s.price).join() === '2100,2180,2320,2320,2500', 'saringSeller 0+ rusak');
 
   const tombol = document.querySelector('.el-table__body .el-button.table-fullwidth');
   if (!tombol) return console.error('Buka halaman Buyer Area > Produk dulu.');
@@ -95,7 +97,7 @@
       const terlewati = [...new Set(urutan.filter(u => sellerDilewati.has(u.s.seller)).map(u => u.s.seller))];
       if (!lolos.length) baris.hasil = terlewati.length
         ? `Seller yang memenuhi syarat dilewati (menolak akun ini): ${terlewati.join(', ')}`
-        : `Tidak ada seller Nilai >= ${NILAI_MIN} & ulasan ${ulasanTerendah}+`;
+        : `Tidak ada seller Nilai >= ${NILAI_MIN}${ulasanTerendah ? ` & ulasan ${ulasanTerendah}+` : ''}`;
       else if (!kandidat.length) baris.hasil = `Tidak ada seller tersisa: semua dipakai ${[...dipakaiProduk.values()].join(', ')}`;
       const patokan = p.price; // harga seller sekarang, hanya untuk laporan hemat (minus = lebih mahal)
 
