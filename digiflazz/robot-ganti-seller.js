@@ -9,9 +9,11 @@
   const TINGKAT_ULASAN = [20, 10];
   const JEDA_MS = 700;
   const MAKS_DITOLAK = 3; // seller yang menolak (mis. wajib KTP) sebelum produk itu dilewati
-  // Seller yang menolak akun ini (wajib KTP). Hapus dari daftar bila KTP sudah diverifikasi Digiflazz.
-  // Seller lain yang menolak saat disimpan ikut ditambahkan otomatis selama robot berjalan.
+  // Seller yang menolak akun ini (wajib KTP), dilewati di semua produk. Hapus dari daftar bila KTP sudah diverifikasi Digiflazz.
+  // Seller yang menolak dengan pesan cocok PENOLAKAN_AKUN ikut ditambahkan otomatis selama robot berjalan;
+  // penolakan lain (mis. soal harga/produk) hanya berlaku untuk baris itu, produk lain tetap mencoba seller tsb.
   const sellerDilewati = new Set(['CV KENZIE KOMUNIKA']);
+  const PENOLAKAN_AKUN = /ktp|verifikasi|identitas/i;
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   // Galat dari $http Digiflazz berbentuk respons: { status, data: { message } }.
@@ -87,7 +89,11 @@
         if (lolos.length) { baris.standarUlasan = ulasanMin + '+'; break; }
       }
       const kandidat = lolos.filter(s => !dipakaiProduk.has(s.seller));
-      if (!lolos.length) baris.hasil = `Tidak ada seller Nilai >= ${NILAI_MIN} & ulasan ${ulasanTerendah}+`;
+      // Seller yang memenuhi syarat tapi dilewati karena menolak akun ini.
+      const terlewati = [...new Set(saringSeller(data.data, ulasanTerendah).filter(s => sellerDilewati.has(s.seller)).map(s => s.seller))];
+      if (!lolos.length) baris.hasil = terlewati.length
+        ? `Seller yang memenuhi syarat dilewati (menolak akun ini): ${terlewati.join(', ')}`
+        : `Tidak ada seller Nilai >= ${NILAI_MIN} & ulasan ${ulasanTerendah}+`;
       else if (!kandidat.length) baris.hasil = `Tidak ada seller tersisa: semua dipakai ${[...dipakaiProduk.values()].join(', ')}`;
       const patokan = p.price; // harga seller sekarang, hanya untuk laporan hemat (minus = lebih mahal)
 
@@ -117,7 +123,7 @@
           break;
         } catch (e) {
           if (statusGalat(e) !== 400) throw e;
-          sellerDilewati.add(s.seller);
+          if (PENOLAKAN_AKUN.test(pesanGalat(e))) sellerDilewati.add(s.seller);
           (baris.ditolak ||= []).push(`${s.seller}: ${pesanGalat(e)}`);
           if (baris.ditolak.length >= MAKS_DITOLAK) { baris.hasil = `GAGAL: ${MAKS_DITOLAK} seller menolak`; break; }
           await sleep(JEDA_MS);
